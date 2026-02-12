@@ -302,3 +302,18 @@ body {
   opacity: 0.85;
   font-size: 0.92rem;
 }
+
+/* Section separator for semester consolidated charts */
+.separator-card {
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  text-align: center;
+}
+
+.separator-card h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: rgba(255, 255, 255, 0.92);
+}

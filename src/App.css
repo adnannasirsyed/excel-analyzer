@@ -270,3 +270,35 @@ body {
     width: 100%;
   }
 }
+
+/* Tutoring controls (month selector) */
+.tutoring-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.control-label {
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.control-select {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  outline: none;
+}
+
+.control-select option {
+  color: #111111;
+}
+
+.info-text.subtle {
+  opacity: 0.85;
+  font-size: 0.92rem;
+}

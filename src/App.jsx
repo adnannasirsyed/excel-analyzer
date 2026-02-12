@@ -1,23 +1,175 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { 
+import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, ScatterChart, Scatter,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell 
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import './App.css';
 
 // Custom color palettes
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8', '#82CA9D', '#FFC658', '#FF6B6B'];
-const TIME_SLOT_COLORS = {
-  '10:30-11:30': '#4A90E2',
-  '11:30-12:30': '#50C878',
-  '12:30-13:30': '#F5A623',
-  '13:30-14:30': '#E94B3C',
-  '14:30-15:30': '#9B59B6',
-  '15:30-16:30': '#1ABC9C',
-  '16:30-17:30': '#E67E22',
-  '17:30-18:30': '#34495E'
+
+// Hour-long time slots from 10:30 to 18:30 (inclusive start, exclusive end)
+const TIME_SLOTS = [
+  { label: '10:30-11:30', startMin: 10 * 60 + 30, endMin: 11 * 60 + 30, color: '#4A90E2' },
+  { label: '11:30-12:30', startMin: 11 * 60 + 30, endMin: 12 * 60 + 30, color: '#50C878' },
+  { label: '12:30-13:30', startMin: 12 * 60 + 30, endMin: 13 * 60 + 30, color: '#F5A623' },
+  { label: '13:30-14:30', startMin: 13 * 60 + 30, endMin: 14 * 60 + 30, color: '#E94B3C' },
+  { label: '14:30-15:30', startMin: 14 * 60 + 30, endMin: 15 * 60 + 30, color: '#9B59B6' },
+  { label: '15:30-16:30', startMin: 15 * 60 + 30, endMin: 16 * 60 + 30, color: '#1ABC9C' },
+  { label: '16:30-17:30', startMin: 16 * 60 + 30, endMin: 17 * 60 + 30, color: '#E67E22' },
+  { label: '17:30-18:30', startMin: 17 * 60 + 30, endMin: 18 * 60 + 30, color: '#34495E' },
+];
+
+const TIME_SLOT_COLORS = TIME_SLOTS.reduce((acc, s) => {
+  acc[s.label] = s.color;
+  return acc;
+}, {});
+
+const normalizeHeader = (h) => String(h ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+const findColumnName = (headers, candidates) => {
+  const map = new Map(headers.map(h => [normalizeHeader(h), h]));
+  for (const c of candidates) {
+    const key = normalizeHeader(c);
+    if (map.has(key)) return map.get(key);
+  }
+  return null;
+};
+
+const excelSerialToDate = (serial) => {
+  // Excel serial date (Windows): days since 1899-12-30
+  // SheetJS provides SSF.parse_date_code which is more robust for edge cases,
+  // but keep a fallback for environments where SSF isn't present.
+  if (typeof serial !== 'number' || Number.isNaN(serial)) return null;
+
+  if (XLSX?.SSF?.parse_date_code) {
+    const d = XLSX.SSF.parse_date_code(serial);
+    if (!d) return null;
+    return new Date(d.y, (d.m ?? 1) - 1, d.d ?? 1, d.H ?? 0, d.M ?? 0, d.S ?? 0);
+  }
+
+  const epoch = new Date(Date.UTC(1899, 11, 30));
+  const ms = Math.round(serial * 24 * 60 * 60 * 1000);
+  return new Date(epoch.getTime() + ms);
+};
+
+const timeToMinutes = (timeObj) => {
+  if (timeObj == null) return null;
+
+  // 1) Date object
+  if (timeObj instanceof Date && !Number.isNaN(timeObj.getTime())) {
+    return timeObj.getHours() * 60 + timeObj.getMinutes();
+  }
+
+  // 2) Excel numeric time (fraction of day) or datetime serial (>= 1)
+  if (typeof timeObj === 'number' && !Number.isNaN(timeObj)) {
+    const frac = timeObj >= 1 ? (timeObj - Math.floor(timeObj)) : timeObj;
+    const totalMinutes = Math.round(frac * 24 * 60);
+    if (totalMinutes < 0 || totalMinutes >= 24 * 60) return null;
+    return totalMinutes;
+  }
+
+  // 3) Object with hour/minute
+  if (typeof timeObj === 'object') {
+    const hour = ('hour' in timeObj ? timeObj.hour : ('hours' in timeObj ? timeObj.hours : null));
+    const minute = ('minute' in timeObj ? timeObj.minute : ('minutes' in timeObj ? timeObj.minutes : null));
+    if (hour != null && minute != null) {
+      const h = Number(hour);
+      const m = Number(minute);
+      if (!Number.isNaN(h) && !Number.isNaN(m)) return h * 60 + m;
+    }
+  }
+
+  // 4) String formats: "10:45", "10:45 AM", "10:45:00", "10:45:00 PM"
+  const s = String(timeObj).trim();
+  const m = s.match(/(\d{1,2})\s*:\s*(\d{2})(?:\s*:\s*(\d{2}))?\s*(AM|PM)?/i);
+  if (!m) return null;
+
+  let hh = parseInt(m[1], 10);
+  const mm = parseInt(m[2], 10);
+  const ampm = (m[4] || '').toUpperCase();
+
+  if (ampm === 'AM' && hh === 12) hh = 0;
+  if (ampm === 'PM' && hh < 12) hh += 12;
+
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return hh * 60 + mm;
+};
+
+const getTimeSlot = (timeObj) => {
+  const mins = timeToMinutes(timeObj);
+  if (mins == null) return null;
+  const slot = TIME_SLOTS.find(s => mins >= s.startMin && mins < s.endMin);
+  return slot ? slot.label : null;
+};
+
+const dateToMonthKey = (dateObj) => {
+  if (dateObj == null) return null;
+
+  if (dateObj instanceof Date && !Number.isNaN(dateObj.getTime())) {
+    return dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+  }
+
+  if (typeof dateObj === 'number' && !Number.isNaN(dateObj)) {
+    const d = excelSerialToDate(dateObj);
+    return d ? d.toLocaleString('default', { month: 'long', year: 'numeric' }) : null;
+  }
+
+  const s = String(dateObj).trim();
+  if (!s) return null;
+
+  const d = new Date(s);
+  if (!Number.isNaN(d.getTime())) {
+    return d.toLocaleString('default', { month: 'long', year: 'numeric' });
+  }
+
+  return null;
+};
+
+// Returns:
+// {
+//   bySlot: { [slotLabel]: { total: number, byMonth: { [monthKey]: number } } },
+//   months: string[]
+// }
+const processTutoringData = (data, signInColName, dateColName) => {
+  const bySlot = {};
+  const monthSet = new Set();
+
+  for (const row of data) {
+    const signInTime = row?.[signInColName];
+    const dateVal = row?.[dateColName];
+
+    const slot = getTimeSlot(signInTime);
+    const monthKey = dateToMonthKey(dateVal);
+
+    if (!slot) continue;
+
+    if (!bySlot[slot]) bySlot[slot] = { total: 0, byMonth: {} };
+    bySlot[slot].total += 1;
+
+    if (monthKey) {
+      bySlot[slot].byMonth[monthKey] = (bySlot[slot].byMonth[monthKey] || 0) + 1;
+      monthSet.add(monthKey);
+    }
+  }
+
+  // Stable month ordering: chronological by parsing "Month YYYY"
+  const months = Array.from(monthSet);
+  months.sort((a, b) => {
+    const da = new Date(a);
+    const db = new Date(b);
+    const ta = Number.isNaN(da.getTime()) ? 0 : da.getTime();
+    const tb = Number.isNaN(db.getTime()) ? 0 : db.getTime();
+    return ta - tb;
+  });
+
+  // Ensure all time slots exist (even if 0)
+  for (const s of TIME_SLOTS) {
+    if (!bySlot[s.label]) bySlot[s.label] = { total: 0, byMonth: {} };
+  }
+
+  return { bySlot, months };
 };
 
 function App() {
@@ -29,601 +181,328 @@ function App() {
   const [charts, setCharts] = useState([]);
   const [isTutoringData, setIsTutoringData] = useState(false);
 
-  // Convert time string to hour (for grouping)
-  const getTimeSlot = (timeObj) => {
-    if (!timeObj) return null;
-    
-    let hour, minute;
-    
-    // Handle datetime.time objects (from Excel)
-    if (typeof timeObj === 'object' && timeObj !== null) {
-      // If it's a Date object
-      if (timeObj instanceof Date) {
-        hour = timeObj.getHours();
-        minute = timeObj.getMinutes();
-      }
-      // If it has hour/minute properties
-      else if ('hour' in timeObj || 'hours' in timeObj) {
-        hour = timeObj.hour || timeObj.hours || 0;
-        minute = timeObj.minute || timeObj.minutes || 0;
-      }
-      else {
-        // Convert to string and parse
-        const timeStr = timeObj.toString();
-        const timeMatch = timeStr.match(/(\d{1,2}):(\d{2})/);
-        if (!timeMatch) return null;
-        hour = parseInt(timeMatch[1]);
-        minute = parseInt(timeMatch[2]);
-      }
-    }
-    // Handle string format
-    else {
-      const timeMatch = timeObj.toString().match(/(\d{1,2}):(\d{2})/);
-      if (!timeMatch) return null;
-      hour = parseInt(timeMatch[1]);
-      minute = parseInt(timeMatch[2]);
-    }
-    
-    // Define time slots (1-hour intervals)
-    if (hour === 10 && minute >= 30) return '10:30-11:30';
-    if (hour === 11 && minute < 30) return '10:30-11:30';
-    if (hour === 11 && minute >= 30) return '11:30-12:30';
-    if (hour === 12 && minute < 30) return '11:30-12:30';
-    if (hour === 12 && minute >= 30) return '12:30-13:30';
-    if (hour === 13 && minute < 30) return '12:30-13:30';
-    if (hour === 13 && minute >= 30) return '13:30-14:30';
-    if (hour === 14 && minute < 30) return '13:30-14:30';
-    if (hour === 14 && minute >= 30) return '14:30-15:30';
-    if (hour === 15 && minute < 30) return '14:30-15:30';
-    if (hour === 15 && minute >= 30) return '15:30-16:30';
-    if (hour === 16 && minute < 30) return '15:30-16:30';
-    if (hour === 16 && minute >= 30) return '16:30-17:30';
-    if (hour === 17 && minute < 30) return '16:30-17:30';
-    if (hour === 17 && minute >= 30) return '17:30-18:30';
-    if (hour === 18 && minute < 30) return '17:30-18:30';
-    
-    return null;
-  };
+  // Tutoring-specific state
+  const [tutoringMonthOptions, setTutoringMonthOptions] = useState([]);
+  const [selectedTutoringMonth, setSelectedTutoringMonth] = useState('ALL');
 
-  // Process tutoring data to create time slot analysis
-  const processTutoringData = (data) => {
-    const monthlyTimeSlots = {};
-    
-    data.forEach(row => {
-      const signInTime = row['Sign in Time'];
-      const date = row['Date'];
-      
-      if (signInTime && date) {
-        const timeSlot = getTimeSlot(signInTime);
-        
-        if (timeSlot) {
-          // Extract month from date
-          let month = '';
-          if (date instanceof Date) {
-            month = date.toLocaleString('default', { month: 'long', year: 'numeric' });
-          } else if (typeof date === 'string') {
-            const dateObj = new Date(date);
-            if (!isNaN(dateObj)) {
-              month = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
-            }
-          }
-          
-          if (!monthlyTimeSlots[timeSlot]) {
-            monthlyTimeSlots[timeSlot] = { count: 0, months: {} };
-          }
-          monthlyTimeSlots[timeSlot].count++;
-          
-          if (month) {
-            if (!monthlyTimeSlots[timeSlot].months[month]) {
-              monthlyTimeSlots[timeSlot].months[month] = 0;
-            }
-            monthlyTimeSlots[timeSlot].months[month]++;
-          }
-        }
-      }
-    });
-    
-    return monthlyTimeSlots;
-  };
+  const tutoringColumnNames = useMemo(() => {
+    if (!columns || columns.length === 0) return { signIn: null, date: null };
+    const signIn = findColumnName(columns, ['Sign in Time', 'Sign-in Time', 'Signin Time', 'Sign In Time']);
+    const date = findColumnName(columns, ['Date', 'Session Date', 'Visit Date']);
+    return { signIn, date };
+  }, [columns]);
 
-  // Handle file upload
   const handleFileUpload = (e) => {
-    const file = e.target.files[0];
+    const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
     reader.onload = (event) => {
       const data = new Uint8Array(event.target.result);
-      const wb = XLSX.read(data, { type: 'array' });
-      
+      // cellDates helps SheetJS convert date-formatted cells into Date objects,
+      // but we still keep robust numeric parsing for mixed spreadsheets.
+      const wb = XLSX.read(data, { type: 'array', cellDates: true });
+
       setWorkbook(wb);
       setSheetNames(wb.SheetNames);
       setSelectedSheet('');
       setSheetData([]);
+      setColumns([]);
       setCharts([]);
+      setIsTutoringData(false);
+      setTutoringMonthOptions([]);
+      setSelectedTutoringMonth('ALL');
     };
     reader.readAsArrayBuffer(file);
   };
 
-  // Handle sheet selection
   const handleSheetSelect = (sheetName) => {
     if (!workbook) return;
 
     const worksheet = workbook.Sheets[sheetName];
     const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: null });
-    
+
     setSelectedSheet(sheetName);
     setSheetData(jsonData);
-    
-    // Extract column names
+
     if (jsonData.length > 0) {
-      const cols = Object.keys(jsonData[0]);
+      const cols = Object.keys(jsonData[0] || {});
       setColumns(cols);
-      
-      // Check if this is tutoring data (has Sign in Time column)
-      const hasTutoringColumns = cols.includes('Sign in Time') && cols.includes('Date');
+
+      const signIn = findColumnName(cols, ['Sign in Time', 'Sign-in Time', 'Signin Time', 'Sign In Time']);
+      const date = findColumnName(cols, ['Date', 'Session Date', 'Visit Date']);
+
+      const hasTutoringColumns = Boolean(signIn && date);
       setIsTutoringData(hasTutoringColumns);
+
+      if (hasTutoringColumns) {
+        const processed = processTutoringData(jsonData, signIn, date);
+        setTutoringMonthOptions(processed.months);
+        setSelectedTutoringMonth('ALL');
+      } else {
+        setTutoringMonthOptions([]);
+        setSelectedTutoringMonth('ALL');
+      }
     }
   };
 
-  // Detect numeric columns
   const getNumericColumns = () => {
-    if (sheetData.length === 0) return [];
-    
-    return columns.filter(col => {
-      const values = sheetData.slice(0, 10).map(row => row[col]);
-      const numericCount = values.filter(v => v !== null && !isNaN(Number(v))).length;
-      return numericCount > values.length * 0.5; // At least 50% numeric
+    if (!sheetData || sheetData.length === 0) return [];
+    const sample = sheetData[0];
+
+    return Object.keys(sample).filter(col => {
+      return sheetData.some(row => typeof row[col] === 'number' && !Number.isNaN(row[col]));
     });
   };
 
-  // Generate all possible charts
   const generateCharts = () => {
     const newCharts = [];
-    
-    // If this is tutoring data, create specialized tutoring charts
-    if (isTutoringData) {
-      const timeSlotData = processTutoringData(sheetData);
-      
-      // Chart 1: Students per Time Slot (Bar Chart) - THE MAIN CHART YOU REQUESTED
-      const timeSlotChartData = Object.keys(timeSlotData)
-        .sort()
-        .map(slot => ({
-          timeSlot: slot,
-          students: timeSlotData[slot].count
-        }));
-      
-      if (timeSlotChartData.length > 0) {
+
+    // Specialized tutoring charts
+    if (isTutoringData && tutoringColumnNames.signIn && tutoringColumnNames.date) {
+      const { bySlot, months } = processTutoringData(sheetData, tutoringColumnNames.signIn, tutoringColumnNames.date);
+
+      // MAIN CHART: Students by time slot for a selected month (or ALL)
+      const timeSlotChartData = TIME_SLOTS.map(s => {
+        const slotData = bySlot[s.label] || { total: 0, byMonth: {} };
+        const students = selectedTutoringMonth === 'ALL'
+          ? (slotData.total || 0)
+          : (slotData.byMonth?.[selectedTutoringMonth] || 0);
+        return { timeSlot: s.label, students };
+      });
+
+      const mainTitle = selectedTutoringMonth === 'ALL'
+        ? 'Number of Students by Time Slot (All Months)'
+        : `Number of Students by Time Slot (${selectedTutoringMonth})`;
+
+      newCharts.push({
+        id: 'tutoring-timeslot-month-bar',
+        type: 'bar',
+        title: mainTitle,
+        data: timeSlotChartData,
+        dataKey: 'students',
+        nameKey: 'timeSlot',
+        xLabel: 'Time Slot',
+        yLabel: 'Number of Students',
+      });
+
+      // Optional: Stacked bar by month (useful to spot seasonal shifts)
+      if (months.length > 1) {
+        const monthStackData = months.map(m => {
+          const row = { month: m };
+          for (const s of TIME_SLOTS) {
+            row[s.label] = bySlot[s.label]?.byMonth?.[m] || 0;
+          }
+          return row;
+        });
+
         newCharts.push({
-          id: 'tutoring-timeslot-bar',
-          type: 'bar',
-          title: 'Number of Students by Tutoring Time Slot',
-          data: timeSlotChartData,
-          dataKey: 'students',
-          nameKey: 'timeSlot',
-          xLabel: 'Time Slot',
+          id: 'tutoring-month-stacked',
+          type: 'stackedBar',
+          title: 'Students per Month (Stacked by Time Slot)',
+          data: monthStackData,
+          nameKey: 'month',
+          xLabel: 'Month',
           yLabel: 'Number of Students',
-          color: '#4A90E2'
+          stacks: TIME_SLOTS.map(s => s.label)
         });
       }
-      
-      // Chart 2: Trend Line of Students per Time Slot
-      if (timeSlotChartData.length > 0) {
-        newCharts.push({
-          id: 'tutoring-timeslot-line',
-          type: 'line',
-          title: 'Student Attendance Trend Across Time Slots',
-          data: timeSlotChartData,
-          dataKey: 'students',
-          nameKey: 'timeSlot',
-          xLabel: 'Time Slot',
-          yLabel: 'Number of Students',
-          color: '#50C878'
-        });
-      }
-      
-      // Chart 3: Subject/Class Distribution (if available)
-      if (columns.includes('Subject/Class')) {
-        const subjectCounts = {};
-        sheetData.forEach(row => {
-          const subject = row['Subject/Class'];
-          if (subject) {
-            subjectCounts[subject] = (subjectCounts[subject] || 0) + 1;
-          }
-        });
-        
-        const subjectData = Object.keys(subjectCounts)
-          .map(subject => ({
-            name: subject,
-            value: subjectCounts[subject]
-          }))
-          .sort((a, b) => b.value - a.value)
-          .slice(0, 10); // Top 10 subjects
-        
-        if (subjectData.length > 0) {
-          newCharts.push({
-            id: 'subject-distribution-bar',
-            type: 'bar',
-            title: 'Top 10 Most Popular Subjects/Classes',
-            data: subjectData,
-            dataKey: 'value',
-            nameKey: 'name',
-            xLabel: 'Subject/Class',
-            yLabel: 'Number of Sessions',
-            color: '#F5A623'
-          });
-        }
-      }
-      
-      // Chart 4: Tutor workload (if available)
-      if (columns.includes('Tutor')) {
-        const tutorCounts = {};
-        sheetData.forEach(row => {
-          const tutor = row['Tutor'];
-          if (tutor) {
-            tutorCounts[tutor] = (tutorCounts[tutor] || 0) + 1;
-          }
-        });
-        
-        const tutorData = Object.keys(tutorCounts)
-          .map(tutor => ({
-            name: tutor,
-            value: tutorCounts[tutor]
-          }))
-          .sort((a, b) => b.value - a.value);
-        
-        if (tutorData.length > 0) {
-          newCharts.push({
-            id: 'tutor-workload-bar',
-            type: 'bar',
-            title: 'Tutoring Sessions per Tutor',
-            data: tutorData,
-            dataKey: 'value',
-            nameKey: 'name',
-            xLabel: 'Tutor',
-            yLabel: 'Number of Sessions',
-            color: '#E94B3C'
-          });
-        }
-      }
-      
-      // Chart 5: Daily attendance pattern
-      if (columns.includes('Date')) {
-        const dateCounts = {};
-        sheetData.forEach(row => {
-          const date = row['Date'];
-          if (date) {
-            let dateStr = '';
-            if (date instanceof Date) {
-              dateStr = date.toLocaleDateString();
-            } else if (typeof date === 'string') {
-              const dateObj = new Date(date);
-              if (!isNaN(dateObj)) {
-                dateStr = dateObj.toLocaleDateString();
-              }
-            }
-            if (dateStr) {
-              dateCounts[dateStr] = (dateCounts[dateStr] || 0) + 1;
-            }
-          }
-        });
-        
-        const dateData = Object.keys(dateCounts)
-          .sort((a, b) => new Date(a) - new Date(b))
-          .map(date => ({
-            date: date,
-            students: dateCounts[date]
-          }));
-        
-        if (dateData.length > 0) {
-          newCharts.push({
-            id: 'daily-attendance-line',
-            type: 'line',
-            title: 'Daily Student Attendance',
-            data: dateData,
-            dataKey: 'students',
-            nameKey: 'date',
-            xLabel: 'Date',
-            yLabel: 'Number of Students',
-            color: '#9B59B6'
-          });
-        }
-      }
-      
-    } else {
-      // General data analysis (original logic)
-      const numericCols = getNumericColumns();
-      const categoricalCols = columns.filter(col => !numericCols.includes(col));
-      
-      // Bar charts for each numeric column by categorical column
-      numericCols.forEach(numCol => {
-        categoricalCols.slice(0, 2).forEach(catCol => {
-          const aggregated = {};
-          sheetData.forEach(row => {
-            const category = row[catCol];
-            const value = Number(row[numCol]);
-            if (category && !isNaN(value)) {
-              if (!aggregated[category]) {
-                aggregated[category] = { sum: 0, count: 0 };
-              }
-              aggregated[category].sum += value;
-              aggregated[category].count += 1;
-            }
-          });
 
-          const chartData = Object.keys(aggregated).slice(0, 10).map(key => ({
-            name: String(key),
-            value: aggregated[key].sum / aggregated[key].count
-          }));
-
-          if (chartData.length > 0) {
-            newCharts.push({
-              id: `bar-${numCol}-${catCol}`,
-              type: 'bar',
-              title: `Average ${numCol} by ${catCol}`,
-              data: chartData,
-              dataKey: 'value',
-              nameKey: 'name',
-              xLabel: catCol,
-              yLabel: `Average ${numCol}`,
-              color: '#8884d8'
-            });
-          }
-        });
-      });
-
-      // Line charts for numeric trends
-      numericCols.slice(0, 3).forEach(numCol => {
-        const chartData = sheetData.slice(0, 20).map((row, idx) => ({
-          name: String(idx + 1),
-          value: Number(row[numCol]) || 0
-        }));
-
-        newCharts.push({
-          id: `line-${numCol}`,
-          type: 'line',
-          title: `${numCol} Trend`,
-          data: chartData,
-          dataKey: 'value',
-          nameKey: 'name',
-          xLabel: 'Record Number',
-          yLabel: numCol,
-          color: '#8884d8'
-        });
-      });
-
-      // Pie charts for categorical distributions
-      categoricalCols.slice(0, 2).forEach(catCol => {
-        const counts = {};
-        sheetData.forEach(row => {
-          const val = row[catCol];
-          if (val) {
-            counts[val] = (counts[val] || 0) + 1;
-          }
-        });
-
-        const chartData = Object.keys(counts).slice(0, 8).map(key => ({
-          name: String(key),
-          value: counts[key]
-        }));
-
-        if (chartData.length > 1) {
-          newCharts.push({
-            id: `pie-${catCol}`,
-            type: 'pie',
-            title: `${catCol} Distribution`,
-            data: chartData,
-            dataKey: 'value',
-            nameKey: 'name'
-          });
-        }
-      });
-
-      // Scatter plots for numeric vs numeric
-      if (numericCols.length >= 2) {
-        for (let i = 0; i < Math.min(2, numericCols.length - 1); i++) {
-          const xCol = numericCols[i];
-          const yCol = numericCols[i + 1];
-          
-          const chartData = sheetData.slice(0, 50).map(row => ({
-            x: Number(row[xCol]) || 0,
-            y: Number(row[yCol]) || 0
-          })).filter(d => d.x !== 0 || d.y !== 0);
-
-          if (chartData.length > 0) {
-            newCharts.push({
-              id: `scatter-${xCol}-${yCol}`,
-              type: 'scatter',
-              title: `${yCol} vs ${xCol}`,
-              data: chartData,
-              xLabel: xCol,
-              yLabel: yCol
-            });
-          }
-        }
-      }
+      setCharts(newCharts);
+      return;
     }
+
+    // Generic charts for non-tutoring sheets
+    const numericCols = getNumericColumns();
+    if (numericCols.length === 0) {
+      setCharts([]);
+      return;
+    }
+
+    // Build a simple frequency chart for the first numeric column
+    const col = numericCols[0];
+    const data = sheetData.map((row, idx) => ({
+      index: idx + 1,
+      value: row[col]
+    }));
+
+    newCharts.push({
+      id: 'generic-line',
+      type: 'line',
+      title: `Line Chart: ${col}`,
+      data,
+      dataKey: 'value',
+      nameKey: 'index',
+      xLabel: 'Row',
+      yLabel: col
+    });
 
     setCharts(newCharts);
   };
 
-  // Download chart as PNG
   const downloadChartAsPNG = async (chartId) => {
     const element = document.getElementById(chartId);
     if (!element) return;
 
-    const canvas = await html2canvas(element, {
-      backgroundColor: '#ffffff',
-      scale: 2
-    });
-    
-    canvas.toBlob((blob) => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${chartId}.png`;
-      a.click();
-      URL.revokeObjectURL(url);
-    });
+    const canvas = await html2canvas(element, { backgroundColor: '#ffffff', scale: 2 });
+    const link = document.createElement('a');
+    link.download = `${chartId}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
   };
 
-  // Download chart as SVG
   const downloadChartAsSVG = (chartId) => {
     const element = document.getElementById(chartId);
     if (!element) return;
 
-    const svgElement = element.querySelector('svg');
-    if (!svgElement) return;
+    const svg = element.querySelector('svg');
+    if (!svg) return;
 
-    const svgData = new XMLSerializer().serializeToString(svgElement);
-    const blob = new Blob([svgData], { type: 'image/svg+xml' });
+    const serializer = new XMLSerializer();
+    const source = serializer.serializeToString(svg);
+
+    const blob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${chartId}.svg`;
-    a.click();
+
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${chartId}.svg`;
+    link.click();
+
     URL.revokeObjectURL(url);
   };
 
-  // Render individual chart
   const renderChart = (chart) => {
-    const commonProps = {
-      width: 600,
+    if (!chart || !chart.data) return null;
+
+    const common = {
+      width: '100%',
       height: 400,
-      data: chart.data,
-      margin: { top: 20, right: 30, left: 20, bottom: 80 }
     };
 
-    switch (chart.type) {
-      case 'bar':
-        return (
-          <ResponsiveContainer width="100%" height={400}>
-            <BarChart {...commonProps}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis 
-                dataKey={chart.nameKey} 
-                angle={-45} 
-                textAnchor="end" 
-                height={120}
-                label={{ value: chart.xLabel || '', position: 'insideBottom', offset: -10 }}
-              />
-              <YAxis label={{ value: chart.yLabel || '', angle: -90, position: 'insideLeft' }} />
-              <Tooltip />
-              <Legend wrapperStyle={{ paddingTop: '20px' }} />
-              <Bar 
-                dataKey={chart.dataKey} 
-                fill={chart.color || '#8884d8'} 
-                name={chart.yLabel || chart.dataKey}
-              />
-            </BarChart>
-          </ResponsiveContainer>
-        );
-
-      case 'line':
-        return (
-          <ResponsiveContainer width="100%" height={400}>
-            <LineChart {...commonProps}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis 
-                dataKey={chart.nameKey}
-                angle={-45}
-                textAnchor="end"
-                height={120}
-                label={{ value: chart.xLabel || '', position: 'insideBottom', offset: -10 }}
-              />
-              <YAxis label={{ value: chart.yLabel || '', angle: -90, position: 'insideLeft' }} />
-              <Tooltip />
-              <Legend wrapperStyle={{ paddingTop: '20px' }} />
-              <Line 
-                type="monotone" 
-                dataKey={chart.dataKey} 
-                stroke={chart.color || '#8884d8'}
-                strokeWidth={2}
-                dot={{ fill: chart.color || '#8884d8', r: 4 }}
-                name={chart.yLabel || chart.dataKey}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        );
-
-      case 'pie':
-        return (
-          <ResponsiveContainer width="100%" height={400}>
-            <PieChart>
-              <Pie
-                data={chart.data}
-                dataKey={chart.dataKey}
-                nameKey={chart.nameKey}
-                cx="50%"
-                cy="50%"
-                outerRadius={120}
-                label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(1)}%`}
-              >
-                {chart.data.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip />
-              <Legend wrapperStyle={{ paddingTop: '20px' }} />
-            </PieChart>
-          </ResponsiveContainer>
-        );
-
-      case 'scatter':
-        return (
-          <ResponsiveContainer width="100%" height={400}>
-            <ScatterChart {...commonProps}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis 
-                dataKey="x" 
-                name={chart.xLabel}
-                label={{ value: chart.xLabel || '', position: 'insideBottom', offset: -10 }}
-              />
-              <YAxis 
-                dataKey="y" 
-                name={chart.yLabel}
-                label={{ value: chart.yLabel || '', angle: -90, position: 'insideLeft' }}
-              />
-              <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-              <Legend wrapperStyle={{ paddingTop: '20px' }} />
-              <Scatter name={chart.title} data={chart.data} fill="#8884d8" />
-            </ScatterChart>
-          </ResponsiveContainer>
-        );
-
-      default:
-        return null;
+    if (chart.type === 'bar') {
+      return (
+        <ResponsiveContainer {...common}>
+          <BarChart data={chart.data} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey={chart.nameKey} angle={-20} textAnchor="end" interval={0} />
+            <YAxis />
+            <Tooltip />
+            <Legend />
+            <Bar dataKey={chart.dataKey} name={chart.yLabel}>
+              {chart.data.map((entry, index) => (
+                <Cell
+                  key={`cell-${index}`}
+                  fill={TIME_SLOT_COLORS[entry[chart.nameKey]] || COLORS[index % COLORS.length]}
+                />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
     }
+
+    if (chart.type === 'stackedBar') {
+      return (
+        <ResponsiveContainer {...common}>
+          <BarChart data={chart.data} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey={chart.nameKey} angle={-20} textAnchor="end" interval={0} />
+            <YAxis />
+            <Tooltip />
+            <Legend />
+            {chart.stacks.map((k, idx) => (
+              <Bar key={k} dataKey={k} stackId="a" fill={TIME_SLOT_COLORS[k] || COLORS[idx % COLORS.length]} />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    if (chart.type === 'line') {
+      return (
+        <ResponsiveContainer {...common}>
+          <LineChart data={chart.data} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey={chart.nameKey} />
+            <YAxis />
+            <Tooltip />
+            <Legend />
+            <Line type="monotone" dataKey={chart.dataKey} dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    if (chart.type === 'pie') {
+      return (
+        <ResponsiveContainer {...common}>
+          <PieChart>
+            <Tooltip />
+            <Legend />
+            <Pie data={chart.data} dataKey={chart.dataKey} nameKey={chart.nameKey} outerRadius={140} label>
+              {chart.data.map((entry, index) => (
+                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+              ))}
+            </Pie>
+          </PieChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    if (chart.type === 'scatter') {
+      return (
+        <ResponsiveContainer {...common}>
+          <ScatterChart margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
+            <CartesianGrid />
+            <XAxis type="number" dataKey={chart.xKey} name={chart.xLabel} />
+            <YAxis type="number" dataKey={chart.yKey} name={chart.yLabel} />
+            <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+            <Legend />
+            <Scatter data={chart.data} />
+          </ScatterChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    return null;
   };
+
+  // If charts already exist, keep them synced when month changes
+  useEffect(() => {
+    if (charts.length === 0) return;
+    if (!isTutoringData) return;
+    generateCharts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTutoringMonth]);
 
   return (
     <div className="App">
       <header className="header">
-        <h1>📊 Excel Data Analyzer</h1>
-        <p>Upload your Excel file, select a sheet, and generate interactive charts</p>
+        <div className="header-content">
+          <h1>📊 Excel Analyzer</h1>
+          <p>Upload an Excel file and generate insightful charts</p>
+        </div>
       </header>
 
-      <div className="container">
-        {/* File Upload */}
+      <div className="main-content">
+        {/* Upload Section */}
         <div className="upload-section">
-          <label htmlFor="file-upload" className="upload-button">
-            Choose Excel File
-          </label>
+          <h2>Upload Excel File</h2>
           <input
-            id="file-upload"
             type="file"
             accept=".xlsx,.xls"
             onChange={handleFileUpload}
-            style={{ display: 'none' }}
+            className="file-input"
           />
         </div>
 
         {/* Sheet Selection */}
         {sheetNames.length > 0 && (
           <div className="sheet-selection">
-            <h3>Select a Sheet:</h3>
+            <h2>Select Sheet</h2>
             <div className="sheet-buttons">
-              {sheetNames.map(name => (
+              {sheetNames.map((name) => (
                 <button
                   key={name}
                   className={`sheet-button ${selectedSheet === name ? 'active' : ''}`}
@@ -636,16 +515,42 @@ function App() {
           </div>
         )}
 
-        {/* Generate Charts Button */}
+        {/* Generate Section */}
         {selectedSheet && sheetData.length > 0 && (
           <div className="generate-section">
+            {isTutoringData && tutoringMonthOptions.length > 0 && (
+              <div className="tutoring-controls">
+                <label className="control-label" htmlFor="monthSelect">
+                  Month
+                </label>
+                <select
+                  id="monthSelect"
+                  className="control-select"
+                  value={selectedTutoringMonth}
+                  onChange={(e) => setSelectedTutoringMonth(e.target.value)}
+                >
+                  <option value="ALL">All months</option>
+                  {tutoringMonthOptions.map(m => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <button className="generate-button" onClick={generateCharts}>
               🎨 Generate Charts
             </button>
+
             <p className="info-text">
               Found {sheetData.length} rows and {columns.length} columns
               {isTutoringData && <span className="tutoring-badge"> • Tutoring Data Detected</span>}
             </p>
+
+            {isTutoringData && tutoringColumnNames.signIn && tutoringColumnNames.date && (
+              <p className="info-text subtle">
+                Using columns: <strong>{tutoringColumnNames.date}</strong> (date) and <strong>{tutoringColumnNames.signIn}</strong> (sign-in time)
+              </p>
+            )}
           </div>
         )}
 
@@ -674,7 +579,6 @@ function App() {
           </div>
         )}
 
-        {/* Empty State */}
         {!workbook && (
           <div className="empty-state">
             <p>👆 Upload an Excel file to get started</p>

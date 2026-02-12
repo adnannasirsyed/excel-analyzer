@@ -317,3 +317,85 @@ body {
   font-size: 1.05rem;
   color: rgba(255, 255, 255, 0.92);
 }
+
+/* View mode buttons for monthly vs semester graphs */
+.view-buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.view-button {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.view-button:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.view-button.active {
+  background: rgba(255, 255, 255, 0.26);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+/* Primary generate buttons row */
+.generate-buttons-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.generate-primary,
+.generate-secondary {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.generate-primary {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.generate-secondary {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+.generate-primary:hover,
+.generate-secondary:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.generate-primary.active,
+.generate-secondary.active {
+  border-color: rgba(255, 255, 255, 0.55);
+}
+
+/* Actions panel */
+.actions-panel {
+  margin-top: 18px;
+  padding: 18px 18px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.actions-panel h2 {
+  margin-top: 0;
+}
+
+.generate-primary:disabled,
+.generate-secondary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

@@ -36,20 +36,6 @@ const findColumnName = (headers, candidates) => {
   return null;
 };
 
-const excelSerialToDate = (serial) => {
-  if (typeof serial !== 'number' || Number.isNaN(serial)) return null;
-
-  if (XLSX?.SSF?.parse_date_code) {
-    const d = XLSX.SSF.parse_date_code(serial);
-    if (!d) return null;
-    return new Date(d.y, (d.m ?? 1) - 1, d.d ?? 1, d.H ?? 0, d.M ?? 0, d.S ?? 0);
-  }
-
-  const epoch = new Date(Date.UTC(1899, 11, 30));
-  const ms = Math.round(serial * 24 * 60 * 60 * 1000);
-  return new Date(epoch.getTime() + ms);
-};
-
 const timeToMinutes = (timeObj) => {
   if (timeObj == null) return null;
 
@@ -98,105 +84,72 @@ const durationToHours = (val) => {
     const days = parseInt(m[1], 10);
     const hh = parseInt(m[2], 10);
     const mm = parseInt(m[3], 10);
-    const ss = m[4] ? parseInt(m[4], 10) : 0;
-    return days * 24 + hh + (mm / 60) + (ss / 3600);
+    return days * 24 + hh + mm / 60;
   }
 
-  m = s.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  m = s.match(/(\d{1,2})\s*:\s*(\d{2})(?:\s*:\s*(\d{2}))?/);
   if (m) {
     const hh = parseInt(m[1], 10);
     const mm = parseInt(m[2], 10);
-    const ss = m[3] ? parseInt(m[3], 10) : 0;
-    return hh + (mm / 60) + (ss / 3600);
+    return hh + mm / 60;
   }
 
   return null;
 };
 
 const getTimeSlot = (timeObj) => {
-  const mins = timeToMinutes(timeObj);
-  if (mins == null) return null;
-  const slot = TIME_SLOTS.find(s => mins >= s.startMin && mins < s.endMin);
-  return slot ? slot.label : null;
-};
+  const minutes = timeToMinutes(timeObj);
+  if (minutes == null) return null;
 
-const dateToMonthKey = (dateObj) => {
-  if (dateObj == null) return null;
-
-  if (dateObj instanceof Date && !Number.isNaN(dateObj.getTime())) {
-    return dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+  for (const slot of TIME_SLOTS) {
+    if (minutes >= slot.startMin && minutes < slot.endMin) {
+      return slot.label;
+    }
   }
-
-  if (typeof dateObj === 'number' && !Number.isNaN(dateObj)) {
-    const d = excelSerialToDate(dateObj);
-    return d ? d.toLocaleString('default', { month: 'long', year: 'numeric' }) : null;
-  }
-
-  const s = String(dateObj).trim();
-  if (!s) return null;
-
-  const d = new Date(s);
-  if (!Number.isNaN(d.getTime())) {
-    return d.toLocaleString('default', { month: 'long', year: 'numeric' });
-  }
-
   return null;
 };
 
-const stableMonthSort = (months) => {
-  const ms = [...months];
-  ms.sort((a, b) => {
-    const da = new Date(a);
-    const db = new Date(b);
-    const ta = Number.isNaN(da.getTime()) ? 0 : da.getTime();
-    const tb = Number.isNaN(db.getTime()) ? 0 : db.getTime();
-    return ta - tb;
-  });
-  return ms;
-};
+const dateToMonthKey = (val) => {
+  if (!val) return null;
 
-const buildCounts = (rows, keyFn) => {
-  const map = new Map();
-  for (const r of rows) {
-    const k = keyFn(r);
-    if (!k) continue;
-    map.set(k, (map.get(k) || 0) + 1);
+  let d = null;
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    d = val;
+  } else if (typeof val === 'string') {
+    d = new Date(val);
+    if (Number.isNaN(d.getTime())) return null;
   }
-  return map;
-};
 
-const buildAverages = (rows, groupKeyFn, valueFn) => {
-  const acc = new Map(); // key -> {sum, n}
-  for (const r of rows) {
-    const k = groupKeyFn(r);
-    if (!k) continue;
-    const v = valueFn(r);
-    if (v == null || Number.isNaN(v)) continue;
-    if (!acc.has(k)) acc.set(k, { sum: 0, n: 0 });
-    const cur = acc.get(k);
-    cur.sum += v;
-    cur.n += 1;
-  }
-  const out = new Map();
-  for (const [k, { sum, n }] of acc.entries()) {
-    out.set(k, n > 0 ? sum / n : 0);
-  }
-  return out;
-};
+  if (!d) return null;
 
-const mapToChartData = (m, keyName, valName, { sortByValueDesc = true } = {}) => {
-  const arr = Array.from(m.entries()).map(([k, v]) => ({ [keyName]: k, [valName]: v }));
-  if (sortByValueDesc) arr.sort((a, b) => (b[valName] || 0) - (a[valName] || 0));
-  return arr;
+  const yyyy = d.getFullYear();
+  const m = d.getMonth();
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
+                      'July', 'August', 'September', 'October', 'November', 'December'];
+  return `${monthNames[m]} ${yyyy}`;
 };
 
 const parseSemesterFromText = (text) => {
-  const t = String(text || '');
-  const m = t.match(/\b(Fall|Spring|Summer|Winter)\s*(Semester\s*)?(\d{4})\b/i);
-  if (!m) return null;
-  const term = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
-  const year = m[3];
-  return { term, year, label: `${term} Semester ${year}` };
+  if (!text) return null;
+  const s = String(text).toLowerCase();
+
+  const yearMatch = s.match(/20\d{2}/);
+  const year = yearMatch ? yearMatch[0] : null;
+
+  if (s.includes('spring')) {
+    return { season: 'Spring', year, label: year ? `Spring ${year}` : 'Spring Semester' };
+  }
+  if (s.includes('fall')) {
+    return { season: 'Fall', year, label: year ? `Fall ${year}` : 'Fall Semester' };
+  }
+  if (s.includes('summer')) {
+    return { season: 'Summer', year, label: year ? `Summer ${year}` : 'Summer Semester' };
+  }
+  if (s.includes('winter')) {
+    return { season: 'Winter', year, label: year ? `Winter ${year}` : 'Winter Semester' };
+  }
+
+  return null;
 };
 
 const inferSemesterLabel = (fileName, sheetNames) => {
@@ -206,6 +159,57 @@ const inferSemesterLabel = (fileName, sheetNames) => {
     if (parsed) return parsed.label;
   }
   return 'Semester';
+};
+
+const stableMonthSort = (monthKeys) => {
+  const order = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+
+  return monthKeys.slice().sort((a, b) => {
+    const [mA, yA] = a.split(' ');
+    const [mB, yB] = b.split(' ');
+    const yDiff = parseInt(yA, 10) - parseInt(yB, 10);
+    if (yDiff !== 0) return yDiff;
+    return order.indexOf(mA) - order.indexOf(mB);
+  });
+};
+
+const buildCounts = (rows, keyFn) => {
+  const map = new Map();
+  for (const r of rows) {
+    const key = keyFn(r);
+    if (!key) continue;
+    map.set(key, (map.get(key) || 0) + 1);
+  }
+  return map;
+};
+
+const buildAverages = (rows, keyFn, valFn) => {
+  const sums = new Map();
+  const counts = new Map();
+
+  for (const r of rows) {
+    const key = keyFn(r);
+    const val = valFn(r);
+    if (!key || val == null || Number.isNaN(val)) continue;
+
+    sums.set(key, (sums.get(key) || 0) + val);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+
+  const avgMap = new Map();
+  for (const [k, sum] of sums) {
+    const cnt = counts.get(k) || 1;
+    avgMap.set(k, sum / cnt);
+  }
+  return avgMap;
+};
+
+const mapToChartData = (map, nameKey, valueKey) => {
+  return Array.from(map.entries())
+    .map(([k, v]) => ({ [nameKey]: k, [valueKey]: v }))
+    .filter(x => x[nameKey])
+    .sort((a, b) => b[valueKey] - a[valueKey]);
 };
 
 function App() {
@@ -222,7 +226,7 @@ function App() {
 
   const [tutoringMonthOptions, setTutoringMonthOptions] = useState([]);
   const [selectedTutoringMonth, setSelectedTutoringMonth] = useState('');
-  const [viewMode, setViewMode] = useState('month'); // month | semester
+  const [viewMode, setViewMode] = useState('none'); // none | month | semester
 
   const tutoringColumnNames = useMemo(() => {
     if (!columns || columns.length === 0) return { date: null, signIn: null, tutor: null, subject: null, duration: null };
@@ -231,7 +235,7 @@ function App() {
     const signIn = findColumnName(columns, ['Sign in Time', 'Sign-in Time', 'Signin Time', 'Sign In Time']);
     const tutor = findColumnName(columns, ['Tutor', 'Tutors']);
     const subject = findColumnName(columns, ['Subject/Class', 'Subject', 'Course', 'Course Name', 'Class']);
-    const duration = findColumnName(columns, ['Time', 'Duration', 'Total Time', 'Tutoring Time']);
+    const duration = findColumnName(columns, ['Time', 'Duration', 'Total Time', 'Tutoring Time', 'Time Tutored']);
 
     return { date, signIn, tutor, subject, duration };
   }, [columns]);
@@ -257,7 +261,7 @@ function App() {
       setIsTutoringData(false);
       setTutoringMonthOptions([]);
       setSelectedTutoringMonth('');
-      setViewMode('month');
+      setViewMode('none');
     };
     reader.readAsArrayBuffer(file);
   };
@@ -271,7 +275,7 @@ function App() {
     setSelectedSheet(sheetName);
     setSheetData(jsonData);
     setCharts([]);
-    setViewMode('month');
+    setViewMode('none');
 
     if (jsonData.length > 0) {
       const cols = Object.keys(jsonData[0] || {});
@@ -312,6 +316,11 @@ function App() {
     const subjectCol = colNames.subject;
     const durationCol = colNames.duration;
 
+    if (!signInCol || !tutorCol || !subjectCol) {
+      console.warn('Missing required columns for tutoring charts');
+      return [];
+    }
+
     // 1) Hourly students
     const slotCounts = new Map(TIME_SLOTS.map(s => [s.label, 0]));
     for (const r of rows) {
@@ -329,27 +338,10 @@ function App() {
     const subjectCounts = buildCounts(rows, r => String(r?.[subjectCol] ?? '').trim());
     const subjectChartData = mapToChartData(subjectCounts, 'subject', 'students');
 
-    // 4) Tutor avg hours per session
-    const tutorAvgHours = buildAverages(
-      rows,
-      r => String(r?.[tutorCol] ?? '').trim(),
-      r => durationToHours(r?.[durationCol])
-    );
-    const tutorAvgHoursData = mapToChartData(tutorAvgHours, 'tutor', 'avgHours');
-
-    // 5) Subject avg hours per session
-    const subjectAvgHours = buildAverages(
-      rows,
-      r => String(r?.[subjectCol] ?? '').trim(),
-      r => durationToHours(r?.[durationCol])
-    );
-    const subjectAvgHoursData = mapToChartData(subjectAvgHours, 'subject', 'avgHours');
-
-    return [
+    const chartsToReturn = [
       {
         id: `${idPrefix}-timeslot`,
-        type: 'bar',
-        title: `Hourly Number of Students in ${labelText}`,
+        title: `Students by Time Slot (${labelText})`,
         data: slotChartData,
         dataKey: 'students',
         nameKey: 'timeSlot',
@@ -358,55 +350,121 @@ function App() {
       },
       {
         id: `${idPrefix}-tutor-count`,
-        type: 'bar',
-        title: `Tutor vs Number of Students in ${labelText}`,
+        title: `Sessions per Tutor (${labelText})`,
         data: tutorChartData,
         dataKey: 'students',
         nameKey: 'tutor',
-        yLabel: 'Number of Students',
+        yLabel: 'Number of Sessions',
+        colorMode: 'default',
       },
       {
         id: `${idPrefix}-subject-count`,
-        type: 'bar',
-        title: `Subject vs Number of Students in ${labelText}`,
+        title: `Sessions per Subject (${labelText})`,
         data: subjectChartData,
         dataKey: 'students',
         nameKey: 'subject',
-        yLabel: 'Number of Students',
-      },
-      {
-        id: `${idPrefix}-tutor-avg-hours`,
-        type: 'bar',
-        title: `Average Tutoring Hours per Session by Tutor in ${labelText}`,
-        data: tutorAvgHoursData,
-        dataKey: 'avgHours',
-        nameKey: 'tutor',
-        yLabel: 'Average Hours',
-      },
-      {
-        id: `${idPrefix}-subject-avg-hours`,
-        type: 'bar',
-        title: `Average Tutoring Hours per Session by Subject in ${labelText}`,
-        data: subjectAvgHoursData,
-        dataKey: 'avgHours',
-        nameKey: 'subject',
-        yLabel: 'Average Hours',
+        yLabel: 'Number of Sessions',
+        colorMode: 'default',
       },
     ];
+
+    // 4 & 5) Duration charts if duration column exists
+    if (durationCol) {
+      // Tutor avg hours per session
+      const tutorAvgHours = buildAverages(
+        rows,
+        r => String(r?.[tutorCol] ?? '').trim(),
+        r => durationToHours(r?.[durationCol])
+      );
+      const tutorAvgHoursData = mapToChartData(tutorAvgHours, 'tutor', 'avgHours');
+
+      // Subject avg hours per session
+      const subjectAvgHours = buildAverages(
+        rows,
+        r => String(r?.[subjectCol] ?? '').trim(),
+        r => durationToHours(r?.[durationCol])
+      );
+      const subjectAvgHoursData = mapToChartData(subjectAvgHours, 'subject', 'avgHours');
+
+      chartsToReturn.push(
+        {
+          id: `${idPrefix}-tutor-avg-hours`,
+          title: `Average Hours per Tutor (${labelText})`,
+          data: tutorAvgHoursData,
+          dataKey: 'avgHours',
+          nameKey: 'tutor',
+          yLabel: 'Average Hours',
+          colorMode: 'default',
+        },
+        {
+          id: `${idPrefix}-subject-avg-hours`,
+          title: `Average Hours per Subject (${labelText})`,
+          data: subjectAvgHoursData,
+          dataKey: 'avgHours',
+          nameKey: 'subject',
+          yLabel: 'Average Hours',
+          colorMode: 'default',
+        }
+      );
+    }
+
+    return chartsToReturn;
   };
 
   const generateMonthCharts = () => {
     if (!isTutoringData || !selectedTutoringMonth) return;
 
     const rows = filterRowsByMonth(sheetData, tutoringColumnNames.date, selectedTutoringMonth);
-    setCharts(buildTutoringCharts(rows, selectedTutoringMonth, tutoringColumnNames, 'month'));
+    const generatedCharts = buildTutoringCharts(rows, selectedTutoringMonth, tutoringColumnNames, 'month');
+    console.log('Generated month charts:', generatedCharts.length, generatedCharts);
+    setCharts(generatedCharts);
     setViewMode('month');
   };
 
+  // FIXED: Semester charts should aggregate ALL tutoring sheets from the workbook
   const generateSemesterCharts = () => {
-    if (!isTutoringData) return;
+    if (!workbook) return;
 
-    setCharts(buildTutoringCharts(sheetData, semesterLabel, tutoringColumnNames, 'semester'));
+    // Find all sheets that look like tutoring data
+    const allTutoringRows = [];
+    
+    for (const sheetName of sheetNames) {
+      // Skip summary/data sheets
+      if (sheetName.toLowerCase().includes('data from') || 
+          sheetName.toLowerCase().includes('list of') ||
+          sheetName.toLowerCase().includes('schedule')) {
+        continue;
+      }
+
+      try {
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: null });
+
+        if (jsonData.length === 0) continue;
+
+        const cols = Object.keys(jsonData[0] || {});
+        const date = findColumnName(cols, ['Date', 'Session Date', 'Visit Date']);
+        const signIn = findColumnName(cols, ['Sign in Time', 'Sign-in Time', 'Signin Time', 'Sign In Time']);
+        const tutor = findColumnName(cols, ['Tutor', 'Tutors']);
+        const subject = findColumnName(cols, ['Subject/Class', 'Subject', 'Course', 'Course Name', 'Class']);
+
+        // If this sheet has tutoring columns, add its data
+        if (date && signIn && tutor && subject) {
+          allTutoringRows.push(...jsonData);
+        }
+      } catch (err) {
+        console.warn(`Skipping sheet ${sheetName}:`, err);
+      }
+    }
+
+    if (allTutoringRows.length === 0) {
+      alert('No tutoring data sheets found in this workbook');
+      return;
+    }
+
+    const generatedCharts = buildTutoringCharts(allTutoringRows, semesterLabel, tutoringColumnNames, 'semester');
+    console.log('Generated semester charts:', generatedCharts.length, generatedCharts);
+    setCharts(generatedCharts);
     setViewMode('semester');
   };
 
@@ -452,7 +510,10 @@ function App() {
   };
 
   const renderChart = (chart) => {
-    if (!chart || !chart.data) return null;
+    if (!chart || !chart.data || chart.data.length === 0) {
+      console.warn('Chart has no data:', chart?.id);
+      return <p style={{ padding: '20px', color: '#999' }}>No data available for this chart</p>;
+    }
 
     return (
       <ResponsiveContainer width="100%" height={430}>
@@ -494,7 +555,7 @@ function App() {
 
         {sheetNames.length > 0 && (
           <div className="sheet-selection">
-            <h2>Select Sheet</h2>
+            <h2>Select Sheet (for Monthly View)</h2>
             <div className="sheet-buttons">
               {sheetNames.map((name) => (
                 <button
@@ -506,6 +567,9 @@ function App() {
                 </button>
               ))}
             </div>
+            <p className="info-text subtle" style={{ marginTop: '12px' }}>
+              Select a monthly sheet (e.g., "Feb.", "March") to generate monthly graphs, or skip and generate semester graphs for all data.
+            </p>
           </div>
         )}
 
@@ -513,20 +577,25 @@ function App() {
           <div className="actions-panel">
             <h2>Generate Graphs</h2>
 
-            {!selectedSheet && (
-              <p className="info-text">
-                Select a sheet first. For your file, choose a monthly sheet such as “Sep. 2025” or “Oct. 2025”.
+            {/* Semester button - ALWAYS VISIBLE when file is uploaded */}
+            <div style={{ marginBottom: '20px', paddingBottom: '20px', borderBottom: '1px solid var(--border)' }}>
+              <h3 style={{ fontSize: '1.05rem', marginBottom: '10px', color: 'var(--blue-900)' }}>Semester Overview</h3>
+              <p className="info-text subtle" style={{ marginBottom: '12px' }}>
+                Consolidates data from all tutoring sheets in the workbook into semester-wide charts.
               </p>
-            )}
+              <button
+                className="generate-primary"
+                onClick={generateSemesterCharts}
+                style={{ width: 'auto' }}
+              >
+                📊 Generate {semesterLabel} Graphs
+              </button>
+            </div>
 
-            {selectedSheet && !isTutoringData && (
-              <p className="info-text">
-                This sheet does not look like a tutoring log. Select a monthly tutoring sheet such as “Sep. 2025”.
-              </p>
-            )}
-
+            {/* Monthly section - only if sheet selected */}
             {selectedSheet && isTutoringData && (
               <>
+                <h3 style={{ fontSize: '1.05rem', marginBottom: '10px', color: 'var(--blue-900)' }}>Monthly View</h3>
                 <div className="tutoring-controls">
                   <label className="control-label" htmlFor="monthSelect">Month</label>
                   <select
@@ -539,29 +608,25 @@ function App() {
                   </select>
                 </div>
 
-                <p className="info-text subtle">
-                  Monthly chart titles follow “Month YYYY”. Semester chart titles follow “{semesterLabel}”.
-                </p>
+                <div style={{ marginTop: '14px' }}>
+                  <button
+                    className="generate-secondary"
+                    onClick={generateMonthCharts}
+                    disabled={!selectedTutoringMonth}
+                  >
+                    📅 Generate Monthly Graphs
+                  </button>
+                </div>
               </>
             )}
 
-            <div className="generate-buttons-row">
-              <button
-                className={`generate-primary ${viewMode === 'month' ? 'active' : ''}`}
-                onClick={generateMonthCharts}
-                disabled={!selectedSheet || !isTutoringData || !selectedTutoringMonth}
-              >
-                Generate Monthly Graphs
-              </button>
-
-              <button
-                className={`generate-secondary ${viewMode === 'semester' ? 'active' : ''}`}
-                onClick={generateSemesterCharts}
-                disabled={!selectedSheet || !isTutoringData}
-              >
-                Generate Semester Graphs
-              </button>
-            </div>
+            {selectedSheet && !isTutoringData && (
+              <div style={{ marginTop: '14px' }}>
+                <p className="info-text">
+                  Selected sheet "{selectedSheet}" does not appear to be a tutoring log. Try selecting a monthly sheet like "Feb." or "March", or use the Semester Overview button above.
+                </p>
+              </div>
+            )}
           </div>
         )}
 
@@ -570,7 +635,9 @@ function App() {
             <h2>
               {viewMode === 'semester'
                 ? `Semester Consolidated Charts: ${semesterLabel}`
-                : `Monthly Charts: ${selectedTutoringMonth}`}
+                : viewMode === 'month'
+                ? `Monthly Charts: ${selectedTutoringMonth}`
+                : 'Generated Charts'}
             </h2>
 
             {charts.map(chart => (

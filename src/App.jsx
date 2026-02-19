@@ -423,16 +423,29 @@ function App() {
 
   // FIXED: Semester charts should aggregate ALL tutoring sheets from the workbook
   const generateSemesterCharts = () => {
-    if (!workbook) return;
+    if (!workbook) {
+      alert('Please upload a file first');
+      return;
+    }
+
+    console.log('Starting semester chart generation...');
+    console.log('Available sheets:', sheetNames);
 
     // Find all sheets that look like tutoring data
     const allTutoringRows = [];
+    let foundSheets = [];
     
     for (const sheetName of sheetNames) {
       // Skip summary/data sheets
-      if (sheetName.toLowerCase().includes('data from') || 
-          sheetName.toLowerCase().includes('list of') ||
-          sheetName.toLowerCase().includes('schedule')) {
+      const lowerName = sheetName.toLowerCase().trim();
+      if (lowerName.includes('data from') || 
+          lowerName.includes('list of') ||
+          lowerName.includes('schedule') ||
+          lowerName.includes('detail') ||
+          lowerName.includes('total data') ||
+          lowerName === 'sheet1' ||
+          lowerName.startsWith('sheet')) {
+        console.log(`Skipping sheet: ${sheetName}`);
         continue;
       }
 
@@ -440,32 +453,69 @@ function App() {
         const worksheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: null });
 
-        if (jsonData.length === 0) continue;
+        if (jsonData.length === 0) {
+          console.log(`Sheet ${sheetName} has no data, skipping`);
+          continue;
+        }
 
         const cols = Object.keys(jsonData[0] || {});
+        
+        // Check if this sheet has tutoring columns
         const date = findColumnName(cols, ['Date', 'Session Date', 'Visit Date']);
         const signIn = findColumnName(cols, ['Sign in Time', 'Sign-in Time', 'Signin Time', 'Sign In Time']);
         const tutor = findColumnName(cols, ['Tutor', 'Tutors']);
         const subject = findColumnName(cols, ['Subject/Class', 'Subject', 'Course', 'Course Name', 'Class']);
 
+        const hasTutoringColumns = Boolean(date && signIn && tutor && subject);
+        
+        console.log(`Sheet ${sheetName}: Date=${!!date}, SignIn=${!!signIn}, Tutor=${!!tutor}, Subject=${!!subject} => Tutoring=${hasTutoringColumns}`);
+
         // If this sheet has tutoring columns, add its data
-        if (date && signIn && tutor && subject) {
+        if (hasTutoringColumns) {
           allTutoringRows.push(...jsonData);
+          foundSheets.push(sheetName);
+          console.log(`Added ${jsonData.length} rows from ${sheetName}`);
         }
       } catch (err) {
-        console.warn(`Skipping sheet ${sheetName}:`, err);
+        console.warn(`Error processing sheet ${sheetName}:`, err);
       }
     }
 
+    console.log(`Found ${foundSheets.length} tutoring sheets: ${foundSheets.join(', ')}`);
+    console.log(`Total rows aggregated: ${allTutoringRows.length}`);
+
     if (allTutoringRows.length === 0) {
-      alert('No tutoring data sheets found in this workbook');
+      alert('No tutoring data sheets found in this workbook. Make sure you have monthly sheets like "Sep. 2025" or "Feb." with student check-in data.');
       return;
     }
 
-    const generatedCharts = buildTutoringCharts(allTutoringRows, semesterLabel, tutoringColumnNames, 'semester');
-    console.log('Generated semester charts:', generatedCharts.length, generatedCharts);
-    setCharts(generatedCharts);
-    setViewMode('semester');
+    // Use column names from the first tutoring sheet found
+    if (foundSheets.length > 0) {
+      const firstSheet = workbook.Sheets[foundSheets[0]];
+      const firstData = XLSX.utils.sheet_to_json(firstSheet, { defval: null });
+      const cols = Object.keys(firstData[0] || {});
+      
+      const colNames = {
+        date: findColumnName(cols, ['Date', 'Session Date', 'Visit Date']),
+        signIn: findColumnName(cols, ['Sign in Time', 'Sign-in Time', 'Signin Time', 'Sign In Time']),
+        tutor: findColumnName(cols, ['Tutor', 'Tutors']),
+        subject: findColumnName(cols, ['Subject/Class', 'Subject', 'Course', 'Course Name', 'Class']),
+        duration: findColumnName(cols, ['Time', 'Duration', 'Total Time', 'Tutoring Time', 'Time Tutored'])
+      };
+
+      console.log('Using column names:', colNames);
+
+      const generatedCharts = buildTutoringCharts(allTutoringRows, semesterLabel, colNames, 'semester');
+      console.log('Generated semester charts:', generatedCharts.length, generatedCharts.map(c => c.id));
+      
+      if (generatedCharts.length === 0) {
+        alert('Charts were generated but contained no data. Check the console for details.');
+        return;
+      }
+      
+      setCharts(generatedCharts);
+      setViewMode('semester');
+    }
   };
 
   // Keep month charts synced when month changes and month view already displayed
